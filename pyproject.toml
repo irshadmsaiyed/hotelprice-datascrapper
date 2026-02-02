@@ -1,0 +1,22 @@
+[project]
+name = "booking-scraper"
+version = "0.1.0"
+description = "Booking.com hotel price scraper using Selenium"
+requires-python = ">=3.8"
+dependencies = [
+    "selenium>=4.16.0",
+    "webdriver-manager>=4.0.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = []
+
+[tool.hatch.build.targets.wheel]
+include = ["booking_scraper_v2.py"]
+
+[project.scripts]
+scrape-booking = "booking_scraper_v2:main"
