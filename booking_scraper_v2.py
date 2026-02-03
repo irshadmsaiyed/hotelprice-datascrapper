@@ -15,8 +15,90 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementClickInterceptedException
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.keys import Keys
 import time
+import random
 from datetime import datetime
+
+
+def human_type(driver, element, text, min_delay=0.05, max_delay=0.35):
+    """
+    Types text character by character with random delays between each
+    keystroke to simulate real human typing behaviour.
+
+    Parameters:
+    - driver     : Selenium WebDriver instance
+    - element    : the input element to type into
+    - text       : the full string to type
+    - min_delay  : shortest pause (seconds) between two keystrokes
+    - max_delay  : longest  pause (seconds) between two keystrokes
+    """
+    element.click()                          # focus the field first
+    time.sleep(random.uniform(0.3, 0.7))     # small pause after click, like a human
+
+    for char in text:
+        element.send_keys(char)
+        # random pause between each character  →  looks natural
+        time.sleep(random.uniform(min_delay, max_delay))
+
+        # occasionally add a slightly longer pause (like a human thinking)
+        if random.random() < 0.15:           # 15 % chance
+            time.sleep(random.uniform(0.4, 0.9))
+
+    print(f'   ✓ Typed  →  "{text}"')
+
+
+def wait_for_suggestions(driver, timeout=8):
+    """
+    Waits until the autocomplete dropdown appears and returns
+    the list of <li> suggestion elements.  Returns an empty list
+    when the dropdown does not appear within *timeout* seconds.
+    """
+    suggestion_selectors = [
+        "li[data-i]",                                          # indexed items
+        "ul[role='listbox'] li",                               # ARIA listbox
+        "div[data-testid='autocomplete-results'] li",                  # testid variant
+        ".suggestions-list li",                                # class variant
+    ]
+    for sel in suggestion_selectors:
+        try:
+            items = WebDriverWait(driver, timeout).until(
+                EC.presence_of_all_elements_located((By.CSS_SELECTOR, sel))
+            )
+            if items:
+                print(f"   ✓ Found {len(items)} autocomplete suggestion(s)")
+                return items
+        except (TimeoutException, NoSuchElementException):
+            continue
+    return []
+
+
+def pick_best_suggestion(suggestions, hotel_name):
+    """
+    From the list of autocomplete <li> elements pick the one whose
+    visible text best matches *hotel_name*.  Falls back to the first
+    suggestion when no good match is found.
+
+    Returns the chosen element (or None if the list is empty).
+    """
+    if not suggestions:
+        return None
+
+    hotel_lower = hotel_name.lower()
+    # score every suggestion by how many words from hotel_name it contains
+    scored = []
+    for item in suggestions:
+        item_text = item.text.strip().lower()
+        # count how many words from hotel_name appear in the suggestion
+        score = sum(1 for word in hotel_lower.split() if word in item_text)
+        scored.append((score, item_text, item))
+        print(f'      candidate  →  "{item.text.strip()}"  (score {score})')
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    best = scored[0]
+    print(f'   ✓ Best match  →  "{best[1]}"')
+    return best[2]
 
 def close_all_popups(driver):
     """
@@ -137,129 +219,216 @@ def scrape_booking_price(city, hotel_name, check_in_date, check_out_date):
         print("Checking for pop-ups...")
         close_all_popups(driver)
         
-        # Find and fill the destination field
+        # ── DESTINATION FIELD  (human-like typing) ────────────────────────
         try:
-            print("Entering destination...")
+            print("Entering destination (typing like a human)...\n")
+
             destination_field = WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located((By.NAME, "ss"))
             )
             destination_field.clear()
-            destination_field.send_keys(f"{hotel_name}, {city}")
-            time.sleep(3)
-            
-            # Close any pop-ups that might appear
-            close_all_popups(driver)
-            
-            # Wait for autocomplete suggestions and click the first one
-            try:
-                first_suggestion = WebDriverWait(driver, 10).until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, "li[data-i='0']"))
-                )
-                first_suggestion.click()
-                print("✓ Destination selected")
-                time.sleep(1)
-            except:
-                # If autocomplete doesn't work, just press Enter
-                from selenium.webdriver.common.keys import Keys
-                destination_field.send_keys(Keys.RETURN)
-                print("✓ Destination entered (pressed Enter)")
-                time.sleep(2)
-                
+            time.sleep(random.uniform(0.3, 0.6))
+
+            # ── Step 1 : type the hotel name  word by word ──────────────
+            words = hotel_name.split()                        # e.g. ["Al","Khoory","Skygarden","Hotel"]
+            for i, word in enumerate(words):
+                # type each character of the current word
+                human_type(driver, destination_field, word)
+
+                # after every word (except the last) add a space
+                if i < len(words) - 1:
+                    destination_field.send_keys(" ")
+                    time.sleep(random.uniform(0.15, 0.4))
+
+                # after the first two words have been typed wait a moment
+                # and check whether a useful autocomplete suggestion already
+                # appeared  →  if yes, click it immediately and stop typing
+                if i >= 1:
+                    time.sleep(random.uniform(0.6, 1.2))   # short pause so dropdown can render
+                    close_all_popups(driver)
+                    suggestions = wait_for_suggestions(driver, timeout=3)
+                    best = pick_best_suggestion(suggestions, hotel_name)
+                    if best:
+                        try:
+                            best.click()
+                            print("   ✓ Autocomplete suggestion selected  →  done!\n")
+                            time.sleep(1)
+                            break                            # exit the word-loop
+                        except ElementClickInterceptedException:
+                            close_all_popups(driver)
+                            best.click()
+                            print("   ✓ Autocomplete suggestion selected (after pop-up)  →  done!\n")
+                            time.sleep(1)
+                            break
+                else:
+                    # after the very first word just wait for suggestions to appear
+                    time.sleep(random.uniform(0.8, 1.5))
+            else:
+                # ── Step 2 : no suggestion was picked during the loop ──
+                # wait one more time for suggestions after the full name
+                time.sleep(random.uniform(1.0, 2.0))
+                close_all_popups(driver)
+                suggestions = wait_for_suggestions(driver, timeout=5)
+                best = pick_best_suggestion(suggestions, hotel_name)
+                if best:
+                    try:
+                        best.click()
+                        print("   ✓ Autocomplete suggestion selected  →  done!\n")
+                        time.sleep(1)
+                    except ElementClickInterceptedException:
+                        close_all_popups(driver)
+                        best.click()
+                        print("   ✓ Autocomplete suggestion selected (after pop-up)  →  done!\n")
+                        time.sleep(1)
+                else:
+                    # absolute fallback  →  press Enter
+                    destination_field.send_keys(Keys.RETURN)
+                    print("   ⚠ No suggestion matched  →  pressed Enter instead\n")
+                    time.sleep(2)
+
         except Exception as e:
-            print(f"✗ Error with destination field: {e}")
+            print(f"   ✗ Error with destination field: {e}")
         
         # Close any pop-ups before date selection
         close_all_popups(driver)
-        
-        # Handle date selection
+
+        # ── DATE SELECTION  (selectors taken from the real HTML) ──────────
         try:
             print("Selecting dates...")
-            # Parse dates
-            checkin = datetime.strptime(check_in_date, "%Y-%m-%d")
+            checkin  = datetime.strptime(check_in_date,  "%Y-%m-%d")
             checkout = datetime.strptime(check_out_date, "%Y-%m-%d")
-            
-            # Try multiple selectors for date button
-            date_button_selectors = [
+
+            # ── Step 1 : open the calendar ────────────────────────────────
+            open_selectors = [
                 "button[data-testid='date-display-field-start']",
                 "div[data-testid='searchbox-dates-container']",
                 "button.sb-date-field__display",
+                "#calendar-searchboxdatepicker-tab-trigger",   # Calendar tab (seen in HTML)
             ]
-            
-            date_button = None
-            for selector in date_button_selectors:
+            calendar_opened = False
+            for sel in open_selectors:
                 try:
-                    date_button = WebDriverWait(driver, 5).until(
-                        EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                    btn = WebDriverWait(driver, 4).until(
+                        EC.element_to_be_clickable((By.CSS_SELECTOR, sel))
                     )
+                    btn.click()
+                    print(f"   ✓ Calendar opened via  →  {sel}")
+                    calendar_opened = True
+                    time.sleep(1.5)
                     break
-                except:
+                except (TimeoutException, NoSuchElementException):
                     continue
-            
-            if date_button:
-                date_button.click()
-                time.sleep(2)
-                close_all_popups(driver)
-                
-                # Select check-in date
-                checkin_xpath = f"//span[@data-date='{check_in_date}']"
-                try:
-                    checkin_element = WebDriverWait(driver, 10).until(
-                        EC.element_to_be_clickable((By.XPATH, checkin_xpath))
+
+            if not calendar_opened:
+                raise Exception("Could not open the calendar datepicker")
+
+            close_all_popups(driver)
+
+            # ── helper : navigate calendar to the month containing target_date
+            def navigate_to_month(target_date: datetime):
+                """
+                Reads the month titles shown on-screen (h3 aria-live='polite').
+                Clicks Previous / Next month until the target month is visible.
+                """
+                for _ in range(24):                                       # safety cap
+                    titles = driver.find_elements(
+                        By.CSS_SELECTOR,
+                        "div[data-testid='searchbox-datepicker-calendar'] "
+                        "h3[aria-live='polite']"
                     )
-                    checkin_element.click()
-                    time.sleep(1)
-                except Exception as e:
-                    print(f"Could not click check-in date: {e}")
-                
-                # Select check-out date
-                checkout_xpath = f"//span[@data-date='{check_out_date}']"
-                try:
-                    checkout_element = WebDriverWait(driver, 10).until(
-                        EC.element_to_be_clickable((By.XPATH, checkout_xpath))
+                    displayed = [t.text.strip() for t in titles]          # ["June 2026", "July 2026"]
+                    target_str = target_date.strftime("%B %Y")            # "June 2026"
+                    print(f"      visible months  →  {displayed}   |  need  →  {target_str}")
+
+                    if target_str in displayed:
+                        print(f"   ✓ Correct month visible  →  {target_str}")
+                        return
+
+                    # compare numerically to decide direction
+                    first_shown = datetime.strptime(displayed[0], "%B %Y")
+                    arrow = "button[aria-label='Previous month']" if target_date < first_shown \
+                            else "button[aria-label='Next month']"
+                    driver.find_element(By.CSS_SELECTOR, arrow).click()
+                    time.sleep(0.8)
+
+                raise Exception(f"Could not navigate to {target_date.strftime('%B %Y')}")
+
+            # ── helper : click a date cell by data-date attribute ─────────
+            def click_date(date_str: str):
+                """  span[data-date='YYYY-MM-DD']  — confirmed in pasted HTML  """
+                el = WebDriverWait(driver, 5).until(
+                    EC.element_to_be_clickable(
+                        (By.CSS_SELECTOR, f"span[data-date='{date_str}']")
                     )
-                    checkout_element.click()
-                    print("✓ Dates selected")
-                    time.sleep(1)
-                except Exception as e:
-                    print(f"Could not click check-out date: {e}")
-            
+                )
+                el.click()
+                print(f"   ✓ Clicked date  →  {date_str}")
+                time.sleep(0.8)
+
+            # ── Step 2 : navigate + click CHECK-IN ────────────────────────
+            navigate_to_month(checkin)
+            click_date(check_in_date)
+            time.sleep(0.5)
+
+            # ── Step 3 : navigate + click CHECK-OUT ───────────────────────
+            navigate_to_month(checkout)                                   # view may have shifted
+            click_date(check_out_date)
+            time.sleep(1.0)
+            print("   ✓ Both dates selected")
+
+            # ── Step 4 : click Apply in the datepicker footer ────────────
+            # Footer:  div[data-testid='datepicker-footer']
+            # Apply is the primary <button> inside it.
+            try:
+                apply_btn = WebDriverWait(driver, 3).until(
+                    EC.element_to_be_clickable((
+                        By.CSS_SELECTOR,
+                        "div[data-testid='datepicker-footer'] button"
+                    ))
+                )
+                apply_btn.click()
+                print("   ✓ Apply button clicked")
+                time.sleep(1)
+            except (TimeoutException, NoSuchElementException):
+                print("   ⚠ No Apply button — assuming calendar auto-closed")
+
         except Exception as e:
-            print(f"✗ Error with date selection: {e}")
-        
-        # Close pop-ups before clicking search
+            print(f"   ✗ Error with date selection: {e}")
+
+        # ── Close pop-ups before search ───────────────────────────────────
         close_all_popups(driver)
-        
-        # Click search button
+        time.sleep(0.5)
+
+        # ── SEARCH BUTTON ─────────────────────────────────────────────────
         try:
             print("Clicking search button...")
-            
-            # Try multiple selectors for search button
+
             search_button_selectors = [
                 "button[type='submit']",
                 "button.sb-searchbox__button",
                 "button[data-testid='search-button']",
             ]
-            
+
             search_clicked = False
-            for selector in search_button_selectors:
+            for sel in search_button_selectors:
                 try:
                     search_button = WebDriverWait(driver, 5).until(
-                        EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                        EC.element_to_be_clickable((By.CSS_SELECTOR, sel))
                     )
                     search_button.click()
                     search_clicked = True
-                    print("✓ Search initiated")
+                    print("   ✓ Search initiated")
                     break
-                except:
+                except (TimeoutException, NoSuchElementException):
                     continue
-            
+
             if not search_clicked:
-                print("✗ Could not click search button")
-                
+                print("   ✗ Could not click search button")
+
             time.sleep(5)
-            
+
         except Exception as e:
-            print(f"✗ Error clicking search button: {e}")
+            print(f"   ✗ Error clicking search button: {e}")
         
         # Close any pop-ups on results page
         print("Checking for pop-ups on results page...")
@@ -310,7 +479,7 @@ def scrape_booking_price(city, hotel_name, check_in_date, check_out_date):
         
         found_target_hotel = False
         
-        for idx, hotel in enumerate(hotels[:10], 1):  # Check first 10 results
+        for idx, hotel in enumerate(hotels[:2], 1):  # Check first 10 results
             try:
                 # Get hotel name
                 name_element = hotel.find_element(By.CSS_SELECTOR, "[data-testid='title']")
@@ -392,9 +561,10 @@ def main():
     print("="*80 + "\n")
 
     city = "Dubai"
-    hotel_name = "Al Khoory Skygarden Hotel"
-    check_in_date = "2026-06-09"
-    check_out_date = "2026-06-10"
+    #hotel_name = "Al Khoory Skygarden Hotel"
+    hotel_name = "Howard Johnson Bur Dubai"
+    check_in_date = "2026-05-01"
+    check_out_date = "2026-05-05"
 
     scrape_booking_price(city, hotel_name, check_in_date, check_out_date)
 
